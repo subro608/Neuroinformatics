@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 
 class MVTEncoder(nn.Module):
-    def __init__(self, dim, num_heads=32):
+    def __init__(self, dim, num_heads=16):
         super().__init__()
         self.attention = nn.MultiheadAttention(dim, num_heads)
         self.norm1 = nn.LayerNorm(dim)
