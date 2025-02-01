@@ -42,3 +42,4 @@ The following colab notebook can be used to test the latest model:
 
 ## Todo
 README and code will be updated if needed.
+srun --nodes=1 --tasks-per-node=1 --cpus-per-task=1 --mem=6GB --time=06:00:00 --gres=gpu:v100:1 --account=pr_130_general --pty /bin/bash
