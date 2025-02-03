@@ -17,7 +17,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from eeg_mvt import MVTEEG
 from eeg_mvt_dataset import EEGDataset
 
-# Ignore RuntimeWarning 
+# Ignore RuntimeWarning and FutureWarning
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
@@ -80,8 +80,8 @@ for dir_path in ['images_mvt_kfold', 'models', 'logs', 'models/checkpoints']:
 log_filename = f'logs/training_log_{time.strftime("%Y%m%d_%H%M%S")}.txt'
 
 def log_message(message, filename=log_filename):
-    print(message)  # Print to console
-    with open(filename, 'a') as f:  # Write to file
+    print(message)
+    with open(filename, 'a') as f:
         f.write(message + '\n')
 
 # Model parameters
@@ -91,15 +91,16 @@ dim = 256
 dropout_rate = 0.1
 
 def init_weights(m):
+    """Fixed initialization function using relu instead of gelu"""
     if isinstance(m, nn.Linear):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='gelu')
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
     elif isinstance(m, nn.LayerNorm):
         nn.init.constant_(m.weight, 1.0)
         nn.init.constant_(m.bias, 0)
     elif isinstance(m, nn.Conv1d):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='gelu')
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
@@ -199,6 +200,9 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
     valid_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=valid_sampler)
     
+    log_message(f'Train dataloader: {len(train_dataloader)} batches')
+    log_message(f'Valid dataloader: {len(valid_dataloader)} batches')
+    
     # Initialize optimizer and scheduler
     optimizer = optim.AdamW(
         mvt_model.parameters(),
@@ -262,7 +266,7 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
                 scheduler.step()
                 
                 if batch_idx % (accumulation_steps * 10) == 0:
-                    log_message(f'Gradient norm: {grad_norm:.4f}')
+                    log_message(f'Batch {batch_idx}/{len(train_dataloader)}, Gradient norm: {grad_norm:.4f}')
             
             train_loss += loss.item() * accumulation_steps
         
@@ -301,9 +305,13 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
         fold_losses.append(epoch_train_loss)
         fold_valid_losses.append(epoch_valid_loss)
         
+        # Calculate epoch time
+        epoch_time = time.time() - start_time
+        
         # Log metrics
         metrics_message = (
             f'Fold {fold + 1}/5, Epoch {epoch + 1}/{epochs}\n'
+            f'Time: {epoch_time:.2f}s\n'
             f'Train Loss: {epoch_train_loss:.4f}, Valid Loss: {epoch_valid_loss:.4f}\n'
             f'Accuracy: {accuracy:.2f}%, F1: {f1:.4f}\n'
             f'Precision: {precision:.4f}, Recall: {recall:.4f}\n'
@@ -349,7 +357,6 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
     plt.grid(True)
     plt.savefig(f'images_mvt_kfold/losses_fold{fold+1}.png')
     plt.close()
-
 # Final results
 log_message('\nTraining completed!')
 log_message(f'Average Training Loss: {np.mean(train_losses):.4f}')
