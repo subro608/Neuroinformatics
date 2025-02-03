@@ -19,6 +19,7 @@ from eeg_mvt_dataset import EEGDataset
 
 # Ignore RuntimeWarning 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 # Enable CUDA
 mne.utils.set_config('MNE_USE_CUDA', 'true')
@@ -33,7 +34,6 @@ def get_latest_checkpoint(checkpoint_dir):
     if not checkpoints:
         return None
     
-    # Extract fold and epoch numbers from filenames
     checkpoint_info = []
     for ckpt in checkpoints:
         try:
@@ -46,14 +46,15 @@ def get_latest_checkpoint(checkpoint_dir):
     if not checkpoint_info:
         return None
     
-    # Sort by fold and epoch
     checkpoint_info.sort(key=lambda x: (x[0], x[1]))
     return checkpoint_info[-1]
 
 def compute_metrics(y_true, y_pred):
     """Compute precision, recall, and F1 score"""
     precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, average='weighted'
+        y_true, y_pred, 
+        average='weighted',
+        zero_division=0
     )
     return precision, recall, f1
 
@@ -91,12 +92,16 @@ dropout_rate = 0.1
 
 def init_weights(m):
     if isinstance(m, nn.Linear):
-        nn.init.xavier_uniform_(m.weight)
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='gelu')
         if m.bias is not None:
-            nn.init.zeros_(m.bias)
+            nn.init.constant_(m.bias, 0)
     elif isinstance(m, nn.LayerNorm):
-        nn.init.ones_(m.weight)
-        nn.init.zeros_(m.bias)
+        nn.init.constant_(m.weight, 1.0)
+        nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.Conv1d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='gelu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
 
 # Initialize model
 mvt_model = MVTEEG(
@@ -145,7 +150,7 @@ train_dataset = EEGDataset(data_dir, balanced_train_data)
 # Training parameters
 epochs = 100
 batch_size = 16
-learning_rate = 0.0001
+learning_rate = 0.0003  # Increased from 0.0001
 accumulation_steps = 4
 max_grad_norm = 1.0
 
@@ -198,7 +203,7 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
     optimizer = optim.AdamW(
         mvt_model.parameters(),
         lr=learning_rate,
-        weight_decay=0.1,
+        weight_decay=0.01,  # Reduced from 0.1
         betas=(0.9, 0.95)
     )
     
@@ -207,9 +212,9 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
         max_lr=learning_rate,
         epochs=epochs,
         steps_per_epoch=len(train_dataloader),
-        pct_start=0.1,
-        div_factor=25,
-        final_div_factor=1e4,
+        pct_start=0.2,  # Increased warm-up period
+        div_factor=10,  # Reduced from 25
+        final_div_factor=1e3,
     )
     
     # Load checkpoint if resuming
@@ -219,7 +224,7 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     # Initialize gradient scaler
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     
     # Training epochs
     fold_losses = []
@@ -241,7 +246,7 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
             labels = labels.to(device)
             
             # Forward pass with mixed precision
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = mvt_model(inputs['time'])
                 loss = criterion(outputs, labels) / accumulation_steps
             
@@ -250,11 +255,14 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
             
             if (batch_idx + 1) % accumulation_steps == 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(mvt_model.parameters(), max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(mvt_model.parameters(), max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
                 scheduler.step()
+                
+                if batch_idx % (accumulation_steps * 10) == 0:
+                    log_message(f'Gradient norm: {grad_norm:.4f}')
             
             train_loss += loss.item() * accumulation_steps
         
@@ -271,7 +279,7 @@ for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.data, 
                 inputs = {k: v.to(device) for k, v in inputs_dict.items()}
                 labels = labels.to(device)
                 
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = mvt_model(inputs['time'])
                     loss = criterion(outputs, labels)
                 
