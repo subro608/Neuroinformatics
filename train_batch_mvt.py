@@ -47,7 +47,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 mvt_model.to(device)
 
 # Rest of your training script remains the same
-data_dir = 'model_data'
+data_dir = 'model-data'
 data_file = 'labels.json'
 
 with open(os.path.join(data_dir, data_file), 'r') as file:

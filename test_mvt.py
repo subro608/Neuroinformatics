@@ -30,15 +30,24 @@ dropout_rate = 0.1
 
 def test_model(data_type='test_cross'):
    # Load model from checkpoint
-   checkpoint_path = 'models/checkpoints/fold5_epoch99.pt'
+   checkpoint_path = 'models/best_mvt_model_fold2.pth'
+   
+   import os
+   if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(
+            f"The checkpoint file does not exist at: {checkpoint_path}")
+
    try:
        model = MVTEEG(
            num_channels=num_chans,
            num_classes=num_classes,
            dim=dim
        )
-       checkpoint = torch.load(checkpoint_path)
-       model.load_state_dict(checkpoint['model_state_dict'])
+       checkpoint = torch.load(checkpoint_path,weights_only = False)
+       model.load_state_dict(checkpoint)
+
+    
+
        print(f"Model loaded successfully from {checkpoint_path}")
    except Exception as e:
        print(f"Error loading model: {e}")
