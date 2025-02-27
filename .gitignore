@@ -12,7 +12,7 @@ models/
 mvt_eeg.pth
 best_mvt_model.pth
 best_mvt_model_kfold.pth
-
+svm-models/
 # Python cache
 __pycache__/
 *.pyc
