@@ -1,19 +1,18 @@
-import torch
 import os
 import json
+import pickle
 import warnings
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm
-from eeg_net import EEGNet
-from eeg_dataset import EEGDataset
-from torch.utils.data import DataLoader
-from sklearn.preprocessing import normalize
-from sklearn.metrics import roc_curve, roc_auc_score
+from eeg_svm_dataset import EEGSVMDataset
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import roc_curve, roc_auc_score, confusion_matrix
 
 
+# Ignore RuntimeWarning
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 # Create output directories
@@ -22,26 +21,36 @@ if not os.path.exists('images'):
 if not os.path.exists('test_results'):
     os.makedirs('test_results')
 
-# Model params
-num_chans = 19
-timepoints = 1425
-num_classes = 3
-F1 = 5
-D = 5
-F2 = 25
-dropout_rate = 0.5
 
-def test_model(data_type='test_cross'):
+def test_model(model_file, data_type='test_cross'):
+    """
+    Test the SVM model on the specified data type.
+    
+    Args:
+        model_file (str): Path to the saved model file
+        data_type (str): Type of test data ('test_cross' or 'test_within')
+        
+    Returns:
+        tuple: (accuracy, f1_score) on the test data
+    """
     # Load model
-    model_file = 'models/eegnet_5fold_train7.pth'
     try:
-        model = EEGNet(num_channels=num_chans, timepoints=timepoints, num_classes=num_classes, F1=F1, D=D,
-                    F2=F2, dropout_rate=dropout_rate)
-        model.load_state_dict(torch.load(model_file))
+        with open(model_file, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        # Extract the components instead of using the pipeline
+        svm_model = model_data['model'].model  # The actual SVC model
+        scaler = model_data['scaler']          # The fitted scaler
+        
         print(f"Model loaded successfully from {model_file}")
+        
+        # Print model parameters
+        params = model_data['params']
+        print(f"Model parameters: kernel={params['kernel']}, C={params['C']}, gamma={params['gamma']}")
+        
     except Exception as e:
         print(f"Error loading model: {e}")
-        return
+        return 0, 0
 
     # Data loading
     data_dir = 'model-data'
@@ -51,106 +60,65 @@ def test_model(data_type='test_cross'):
         data_info = json.load(file)
 
     test_data = [d for d in data_info if d['type'] == data_type]
-    test_dataset = EEGDataset(data_dir, test_data)
-    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=True)
-
+    
     # Count samples per class
     total_a = sum(1 for d in test_data if d['label'] == 'A')
     total_c = sum(1 for d in test_data if d['label'] == 'C')
     total_f = sum(1 for d in test_data if d['label'] == 'F')
 
     print(f'\nTesting on {data_type} data:')
-    print(f'Test dataset: {len(test_dataset)} samples')
-    print(f'Test dataloader: {len(test_dataloader)} batches')
-    print(f'Test dataloader batch size: {test_dataloader.batch_size}')
+    print(f'Test dataset: {len(test_data)} samples')
     print(f'Class distribution - A: {total_a}, C: {total_c}, F: {total_f}\n')
 
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-
-    # Initialize metrics storage
-    all_labels = []
-    all_probs = []
-    a_probs = []
-    c_probs = []
-    f_probs = []
-
-    # Testing loop
-    model.eval()
-    with torch.no_grad():
-        correct = 0
-        total = 0
-        correct_a = 0
-        a_as_c = 0
-        a_as_f = 0
-        correct_c = 0
-        c_as_a = 0
-        c_as_f = 0
-        correct_f = 0
-        f_as_a = 0
-        f_as_c = 0
-        
-        for eeg_data, labels in tqdm(test_dataloader, desc="Testing"):
-            eeg_data, labels = eeg_data.to(device), labels.to(device)
-            outputs = model.forward(eeg_data)
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-            # Store probabilities
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()
-            all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs)
-            a_probs.extend(probs[:, 0])
-            c_probs.extend(probs[:, 1])
-            f_probs.extend(probs[:, 2])
-
-            # Count predictions
-            for i in range(labels.size(0)):
-                if labels[i] == 0:  # True class is A
-                    if predicted[i] == 0:
-                        correct_a += 1
-                    elif predicted[i] == 1:
-                        a_as_c += 1
-                    else:
-                        a_as_f += 1
-                elif labels[i] == 1:  # True class is C
-                    if predicted[i] == 1:
-                        correct_c += 1
-                    elif predicted[i] == 0:
-                        c_as_a += 1
-                    else:
-                        c_as_f += 1
-                else:  # True class is F
-                    if predicted[i] == 2:
-                        correct_f += 1
-                    elif predicted[i] == 0:
-                        f_as_a += 1
-                    else:
-                        f_as_c += 1
-
+    # Create dataset
+    test_dataset = EEGSVMDataset(data_dir, test_data)
+    X_test, y_test = test_dataset.load_data()
+    
+    # Apply scaling manually
+    X_test_scaled = scaler.transform(X_test)
+    
+    # Testing
+    print("Evaluating model...")
+    y_pred = svm_model.predict(X_test_scaled)
+    y_pred_proba = svm_model.predict_proba(X_test_scaled)
+    
     # Calculate metrics
-    accuracy = correct / total if total > 0 else 0
-
+    accuracy = accuracy_score(y_test, y_pred)
+    
     # Create confusion matrix
-    confusion_matrix = np.zeros((3, 3))
-    confusion_matrix[0, 0] = correct_a
-    confusion_matrix[0, 1] = a_as_c
-    confusion_matrix[0, 2] = a_as_f
-    confusion_matrix[1, 0] = c_as_a
-    confusion_matrix[1, 1] = correct_c
-    confusion_matrix[1, 2] = c_as_f
-    confusion_matrix[2, 0] = f_as_a
-    confusion_matrix[2, 1] = f_as_c
-    confusion_matrix[2, 2] = correct_f
-
+    cm = confusion_matrix(y_test, y_pred)
+    
+    # Extract elements from confusion matrix
+    correct_a = cm[0, 0]
+    a_as_c = cm[0, 1]
+    a_as_f = cm[0, 2]
+    
+    c_as_a = cm[1, 0]
+    correct_c = cm[1, 1]
+    c_as_f = cm[1, 2]
+    
+    f_as_a = cm[2, 0]
+    f_as_c = cm[2, 1]
+    correct_f = cm[2, 2]
+    
+    # Total correct and total
+    correct = correct_a + correct_c + correct_f
+    total = len(y_test)
+    
     # Binary classification accuracies
-    accuracy_ad_cn = (correct_a + correct_c) / (total_a + total_c) if (total_a + total_c) > 0 else 0
-    accuracy_ftd_cn = (correct_c + correct_f) / (total_c + total_f) if (total_c + total_f) > 0 else 0
-    accuracy_ad_ftd = (correct_a + correct_f) / (total_a + total_f) if (total_a + total_f) > 0 else 0
+    # A vs C
+    a_vs_c_mask = np.where((y_test == 0) | (y_test == 1))[0]
+    accuracy_ad_cn = accuracy_score(y_test[a_vs_c_mask], y_pred[a_vs_c_mask])
+    
+    # C vs F
+    c_vs_f_mask = np.where((y_test == 1) | (y_test == 2))[0]
+    accuracy_ftd_cn = accuracy_score(y_test[c_vs_f_mask], y_pred[c_vs_f_mask])
+    
+    # A vs F
+    a_vs_f_mask = np.where((y_test == 0) | (y_test == 2))[0]
+    accuracy_ad_ftd = accuracy_score(y_test[a_vs_f_mask], y_pred[a_vs_f_mask])
 
-    # Calculate per-class metrics (fixed to match test_mvt.py calculation method)
+    # Calculate per-class metrics
     # Class A
     precision_a = correct_a / (correct_a + c_as_a + f_as_a) if (correct_a + c_as_a + f_as_a) > 0 else 0
     recall_a = correct_a / (correct_a + a_as_c + a_as_f) if (correct_a + a_as_c + a_as_f) > 0 else 0
@@ -178,9 +146,9 @@ def test_model(data_type='test_cross'):
     mF1 = (f1_a + f1_c + f1_f) / 3
 
     # Save results to file
-    results_file = f'test_results/eegnet_results_{data_type}.txt'
+    results_file = f'test_results/svm_results_{data_type}.txt'
     with open(results_file, 'w') as f:
-        f.write(f'EEGNet Test Results for {data_type}\n\n')
+        f.write(f'SVM Test Results for {data_type}\n\n')
         f.write(f'Correct: {correct}, Total: {total}\n')
         f.write(f'Correct A: {correct_a}, A as C: {a_as_c}, A as F: {a_as_f}, Total A: {total_a}\n')
         f.write(f'Correct C: {correct_c}, C as A: {c_as_a}, C as F: {c_as_f}, Total C: {total_c}\n')
@@ -205,22 +173,30 @@ def test_model(data_type='test_cross'):
 
     # Plot confusion matrix
     plt.figure(figsize=(10, 8))
-    sns.heatmap(confusion_matrix, annot=True, fmt='g', cmap='Blues',
+    sns.heatmap(cm, annot=True, fmt='g', cmap='Blues',
                 xticklabels=['A', 'C', 'F'], yticklabels=['A', 'C', 'F'])
     plt.xlabel('Predicted')
     plt.ylabel('Actual')
-    plt.title(f'Confusion Matrix ({data_type})')
-    plt.savefig(f'images/eegnet_confusion_matrix_{data_type}.png')
+    plt.title(f'SVM Confusion Matrix ({data_type})')
+    cm_path = f'images/svm_confusion_matrix_{data_type}.png'
+    plt.savefig(cm_path)
     plt.close()
+    print(f'Confusion matrix saved to {cm_path}')
+
+    # Get class probabilities for ROC curves
+    a_probs = y_pred_proba[:, 0]
+    c_probs = y_pred_proba[:, 1]
+    f_probs = y_pred_proba[:, 2]
 
     # Plot ROC curves
-    all_probs = np.array(all_probs)
+    fpr_a, tpr_a, _ = roc_curve(y_test, a_probs, pos_label=0)
+    fpr_c, tpr_c, _ = roc_curve(y_test, c_probs, pos_label=1)
+    fpr_f, tpr_f, _ = roc_curve(y_test, f_probs, pos_label=2)
 
-    fpr_a, tpr_a, _ = roc_curve(all_labels, a_probs, pos_label=0)
-    fpr_c, tpr_c, _ = roc_curve(all_labels, c_probs, pos_label=1)
-    fpr_f, tpr_f, _ = roc_curve(all_labels, f_probs, pos_label=2)
-
-    roc_auc_a, roc_auc_c, roc_auc_f = roc_auc_score(all_labels, all_probs, multi_class='ovr', average=None)
+    # Calculate AUC for each class (one-vs-rest)
+    roc_auc_a = roc_auc_score((y_test == 0).astype(int), a_probs)
+    roc_auc_c = roc_auc_score((y_test == 1).astype(int), c_probs)
+    roc_auc_f = roc_auc_score((y_test == 2).astype(int), f_probs)
 
     plt.figure(figsize=(10, 8))
     plt.plot(fpr_a, tpr_a, color='darkorange', lw=2, label=f'AUC A: {roc_auc_a:.4f}')
@@ -229,17 +205,26 @@ def test_model(data_type='test_cross'):
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
-    plt.title(f'ROC Curves ({data_type})')
+    plt.title(f'SVM ROC Curves ({data_type})')
     plt.legend(loc="lower right")
-    plt.savefig(f'images/eegnet_roc_curves_{data_type}.png')
+    roc_path = f'images/svm_roc_curves_{data_type}.png'
+    plt.savefig(roc_path)
     plt.close()
+    print(f'ROC curves saved to {roc_path}')
 
     return accuracy, mF1
 
+
 if __name__ == "__main__":
+    # Path to your trained model
+    model_file = 'svm-models/svm_model_20250226_225329_fold4.pkl'  # Update this with your actual model path
+    
     # Test both cross-subject and within-subject
-    cross_acc, cross_f1 = test_model('test_cross')
-    within_acc, within_f1 = test_model('test_within')
+    print("\nTesting SVM model on cross-subject data...")
+    cross_acc, cross_f1 = test_model(model_file, 'test_cross')
+    
+    print("\nTesting SVM model on within-subject data...")
+    within_acc, within_f1 = test_model(model_file, 'test_within')
     
     print("\nFinal Results:")
     print(f"Cross-subject - Accuracy: {100 * cross_acc:.2f}%, F1: {100 * cross_f1:.2f}%")
