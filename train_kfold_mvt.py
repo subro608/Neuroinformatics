@@ -87,7 +87,7 @@ def log_message(message, filename=log_filename):
 # Model parameters
 num_chans = 19
 num_classes = 3
-dim = 256
+dim = 512
 dropout_rate = 0.1
 
 def init_weights(m):
