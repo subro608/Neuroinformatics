@@ -149,7 +149,7 @@ log_message(f'Total samples: {len(balanced_train_data)}')
 train_dataset = EEGDataset(data_dir, balanced_train_data)
 
 # Training parameters
-epochs = 100
+epochs = 150
 batch_size = 16
 learning_rate = 0.0003  # Increased from 0.0001
 accumulation_steps = 4

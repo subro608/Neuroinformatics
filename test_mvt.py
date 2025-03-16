@@ -25,12 +25,13 @@ if not os.path.exists('test_results'):
 # Model parameters
 num_chans = 19
 num_classes = 3
-dim = 256
+dim = 512
 dropout_rate = 0.1
 
 def test_model(data_type='test_cross'):
    # Load model from checkpoint
-   checkpoint_path = 'models/best_mvt_model_fold2.pth'
+   checkpoint_path = r'models\best_mvt_model_fold1.pth'
+
    
    import os
    if not os.path.exists(checkpoint_path):
