@@ -16,8 +16,8 @@ from torch.utils.checkpoint import checkpoint
 import torch.nn.functional as F
 
 # Import custom models and dataset
-from eeg_multi_spatial_graph_spectral_advanced import create_model, MVTSpatialSpectralModel
-from eeg_dataset_multispatialgraph_spectral_advanced import SpatialSpectralEEGDataset
+from eeg_multi_scale_graph_spectral_advanced import create_model, MVTSpatialSpectralModel
+from eeg_dataset_multiscalegraph_spectral_advanced import SpatialSpectralEEGDataset
 
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)

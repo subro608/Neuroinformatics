@@ -20,29 +20,29 @@ Key features:
 
 The table below shows the performance of different models on both within-subject and cross-subject test settings:
 
-| Model                    | Test Setting    | Accuracy | AD vs. CN | FTD vs. CN | AD vs. FTD |
-|--------------------------|-----------------|----------|-----------|------------|------------|
-| MVT                      | Within-Subject  | 89.83%   | 87.13%    | 93.94%     | 89.45%     |
-| MVT                      | Cross-Subject   | 64.95%   | 70.61%    | 57.58%     | 65.90%     |
-| MVTWavelet               | Within-Subject  | 90.69%   | 90.07%    | 91.41%     | 90.82%     |
-| MVTWavelet               | Cross-Subject   | 63.80%   | 71.08%    | 55.41%     | 63.95%     |
-| Multispatial GS (dim=128)| Within-Subject  | 97.38%   | 96.69%    | 96.97%     | 98.62%     |
-| Multispatial GS (dim=128)| Cross-Subject   | 63.46%   | 71.08%    | 61.37%     | 56.18%     |
-| Multispatial GS (dim=264)| Within-Subject  | **98.55%**| 98.53%    | 98.99%     | 98.17%     |
-| Multispatial GS (dim=264)| Cross-Subject   | 59.68%   | 69.17%    | 55.23%     | 53.53%     |
+| Model                  | Test Setting    | Accuracy | AD vs. CN | FTD vs. CN | AD vs. FTD |
+|------------------------|-----------------|----------|-----------|------------|------------|
+| MVT                    | Within-Subject  | 89.83%   | 87.13%    | 93.94%     | 89.45%     |
+| MVT                    | Cross-Subject   | 64.95%   | 70.61%    | 57.58%     | 65.90%     |
+| MVTWavelet             | Within-Subject  | 90.69%   | 90.07%    | 91.41%     | 90.82%     |
+| MVTWavelet             | Cross-Subject   | 63.80%   | 71.08%    | 55.41%     | 63.95%     |
+| Multiscale GS (dim=128)| Within-Subject  | 97.38%   | 96.69%    | 96.97%     | 98.62%     |
+| Multiscale GS (dim=128)| Cross-Subject   | 63.46%   | 71.08%    | 61.37%     | 56.18%     |
+| Multiscale GS (dim=264)| Within-Subject  | **98.55%**| 98.53%    | 98.99%     | 98.17%     |
+| Multiscale GS (dim=264)| Cross-Subject   | 59.68%   | 69.17%    | 55.23%     | 53.53%     |
 
-The Multispatial Graph Spectral (GS) model with dimension 264 achieves the highest within-subject accuracy of 98.55%.
+The Multiscale Graph Spectral (GS) model with dimension 264 achieves the highest within-subject accuracy of 98.55%.
 
 ## Directory Structure
 
 ### Core Model Components
 Each model follows a consistent naming pattern with dedicated files for model architecture, dataset handling, training, and testing:
 
-#### Multispatial Graph Spectral (GS) Model
-- `eeg_multi_spatial_graph_spectral_advanced.py` - Main model architecture
-- `eeg_dataset_multispatialgraph_spectral_advanced.py` - Dataset preprocessing
-- `train_kfold_multi_spatial_graph_spectral_advanced.py` - Training pipeline
-- `test_multispatial_graph_spectral_advanced.py` - Evaluation script
+#### Multiscale Graph Spectral (GS) Model
+- `eeg_multi_scale_graph_spectral_advanced.py` - Main model architecture
+- `eeg_dataset_multiscalegraph_spectral_advanced.py` - Dataset preprocessing
+- `train_kfold_multi_scale_graph_spectral_advanced.py` - Training pipeline
+- `test_multiscale_graph_spectral_advanced.py` - Evaluation script
 
 #### Multi-View Transformer (MVT) Model
 - `eeg_mvt.py` - Base MVT model architecture
@@ -62,12 +62,17 @@ Each model follows a consistent naming pattern with dedicated files for model ar
 - `train_kfold_svm.py` / `train_kfold_svm_grid.py` - SVM training scripts
 - `test_svm.py` - SVM evaluation script
 
-#### Other Models
-- `eeg_net.py` - Standard EEGNet implementation
-- `eeg_adformer.py` - Attention-based transformer model
-- `eeg_dataset_adformer.py` - Transformer dataset handling
-- `train_kfold_adformer.py` - Transformer training script
-- `test_adformer.py` - Transformer evaluation script
+#### EEGNet Model
+- `eeg_net.py` - EEGNet model implementation
+- `eeg_dataset.py` - Dataset preprocessing for EEGNet
+- `train_kfold.py` - EEGNet training script
+- `test.py` - EEGNet evaluation script
+
+#### ADFormer Model
+- `eeg_adformer.py` - ADFormer (Attention-based transformer) model
+- `eeg_dataset_adformer.py` - ADFormer dataset handling
+- `train_kfold_adformer.py` - ADFormer training script
+- `test_adformer.py` - ADFormer evaluation script
 
 ### Data Processing and Analysis
 - `data_prep.py` - Data preparation and splitting
@@ -78,24 +83,6 @@ Each model follows a consistent naming pattern with dedicated files for model ar
 
 The Jupyter notebooks provide additional analysis techniques and classical machine learning approaches for comparison with the deep learning models. These notebooks offer interactive visualizations, feature importance analysis, and performance metrics for traditional classifiers.
 
-### Datasets
-- `eeg_dataset.py` - Base dataset class
-- `eeg_mvt_dataset.py` / `eeg_mvt_dataset_mfeat.py` - MVT-specific datasets
-- `eeg_svm_dataset.py` - SVM-specific dataset
-- `eeg_dataset_adformer.py` - Transformer-specific dataset
-
-### Training Scripts
-- `train_kfold.py` - Base K-fold training
-- `train_kfold_mvt.py` / `train_kfold_mvt_mfeat.py` - MVT training
-- `train_kfold_svm.py` / `train_kfold_svm_grid.py` - SVM training
-- `train_kfold_adformer.py` - Transformer training
-
-### Evaluation Scripts
-- `test.py` - Base testing script
-- `test_mvt.py` / `test_mvt_mfeat.py` - MVT testing
-- `test_svm.py` - SVM testing
-- `test_adformer.py` - Transformer testing
-
 ### Utilities
 - `hyperparameter_tuning.py` - Hyperparameter optimization
 - `viz.py` - Visualization tools
@@ -103,7 +90,7 @@ The Jupyter notebooks provide additional analysis techniques and classical machi
 
 ## Model Architecture
 
-The Multispatial Graph Spectral (GS) model architecture combines multiple neural network approaches:
+The Multiscale Graph Spectral (GS) model architecture combines multiple neural network approaches:
 
 1. **Spatial Feature Extractor**: Processes raw EEG signals using spatial and channel convolutions followed by transformer encoders
 2. **Multi-Scale Graph Module**: Processes spectral embeddings at different frequency scales using graph convolutions and attention
@@ -151,8 +138,8 @@ python data_prep.py
 Choose the model you want to train:
 
 ```python
-# Train the Multispatial Graph Spectral model
-python train_kfold_multi_spatial_graph_spectral_advanced.py
+# Train the Multiscale Graph Spectral model
+python train_kfold_multi_scale_graph_spectral_advanced.py
 
 # Train the basic Multi-View Transformer
 python train_kfold_mvt.py
@@ -166,8 +153,8 @@ python train_kfold_svm.py
 
 ### Evaluation
 ```python
-# Test the Multispatial Graph Spectral model
-python test_multispatial_graph_spectral_advanced.py
+# Test the Multiscale Graph Spectral model
+python test_multiscale_graph_spectral_advanced.py
 
 # Test the Multi-View Transformer
 python test_mvt.py
