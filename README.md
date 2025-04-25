@@ -69,9 +69,14 @@ Each model follows a consistent naming pattern with dedicated files for model ar
 - `train_kfold_adformer.py` - Transformer training script
 - `test_adformer.py` - Transformer evaluation script
 
-### Data Processing
+### Data Processing and Analysis
 - `data_prep.py` - Data preparation and splitting
 - `data_vis.py` - Data visualization utilities
+- `DataViz_EEG.ipynb` - Comprehensive EEG data visualization and analysis
+- `MLP_KNN_EEG.ipynb` - MLP and KNN classifiers for baseline comparison 
+- `Random_Forest.ipynb` - Random Forest classifier implementation
+
+The Jupyter notebooks provide additional analysis techniques and classical machine learning approaches for comparison with the deep learning models. These notebooks offer interactive visualizations, feature importance analysis, and performance metrics for traditional classifiers.
 
 ### Datasets
 - `eeg_dataset.py` - Base dataset class
@@ -105,14 +110,19 @@ The Multispatial Graph Spectral (GS) model architecture combines multiple neural
 3. **Cross-Attention Mechanism**: Fuses information between spatial and spectral pathways
 4. **Pooling and Fusion**: Combines features from both pathways for final classification
 
-![Model Architecture](mvt_full_model.png)
+![Model Architecture](multispatial_GS.png)
 
 ### Component Diagrams
 - [Spatial Extractor](spatial_extractor.png)
 - [Multiscale Graph Module](multiscale_graph_module.png)
 - [Cross Attention Interactive](cross_attention_interactive.html)
 
-## Data Processing Pipeline
+## Dataset Information
+
+This project uses EEG data for classification between three groups:
+- **A**: Alzheimer's Disease (AD) 
+- **C**: Control (CN)
+- **F**: Frontotemporal Dementia (FTD)
 
 The data processing pipeline includes:
 1. Cropping raw EEG data (removing 30 seconds from start and end)
@@ -121,6 +131,14 @@ The data processing pipeline includes:
 4. Computing spectral features across multiple frequency bands
 5. Creating adjacency matrices for electrode relationships
 6. Calculating lobe-specific features for different brain regions
+
+### Test Types
+
+The models are evaluated on two different test scenarios:
+- **Within-Subject**: Train and test data contain different chunks from the same subjects
+- **Cross-Subject**: Train and test data contain completely different subjects
+
+Cross-subject testing is significantly more challenging as it requires the model to generalize to unseen individuals, which explains the performance gap between the two test settings.
 
 ## Usage
 
@@ -171,13 +189,3 @@ python viz.py
 - Scikit-learn
 - Wandb (for experiment tracking)
 - SciPy
-
-## License
-
-[Your License Here]
-
-## Citation
-
-If you use this code in your research, please cite:
-
-[Your Citation Information Here]
