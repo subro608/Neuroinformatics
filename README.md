@@ -1,45 +1,183 @@
-# CNN-based NDD Classification from EEG Signals
+# EEG Classification with Multi-View Transformer and Graph Neural Networks
 
-This repository contains the code for classifying neurodegenerative diseases (NDDs) from EEG signals using Convolutional Neural Networks (CNNs). The code is written in Python and uses the PyTorch library. The dataset used in this project is the [A dataset of EEG recordings from: Alzheimer's disease, Frontotemporal dementia and Healthy subjects](https://openneuro.org/datasets/ds004504/versions/1.0.7) from OpenNeuro.
+[![Model Performance](https://img.shields.io/badge/Best%20Accuracy-98.55%25-brightgreen)]()
 
-## Workflow
-![workflow](https://github.com/Leofierus/eeg-alzheimers-detection/assets/51908556/0125401f-e499-4d79-8d14-b1095d8d5176)
+
+This repository contains code for advanced EEG signal analysis and classification using deep learning approaches that combine spatial, spectral, and temporal information.
+
+## Project Overview
+
+This project implements a novel neural network architecture for EEG classification that leverages both temporal dynamics and spatial relationships between electrodes. The model combines transformer-based approaches with graph neural networks to process EEG data in multiple domains simultaneously.
+
+Key features:
+- Multi-view transformer architecture for temporal processing
+- Graph-based representation learning for electrode relationships
+- Spectral analysis across multiple frequency bands (delta, theta, alpha, beta, gamma)
+- Cross-attention mechanisms for information fusion
+- Support for standard 10-20 EEG electrode system
+
+## Performance Results
+
+The table below shows the performance of different models on both within-subject and cross-subject test settings:
+
+| Model                    | Test Setting    | Accuracy | AD vs. CN | FTD vs. CN | AD vs. FTD |
+|--------------------------|-----------------|----------|-----------|------------|------------|
+| MVT                      | Within-Subject  | 89.83%   | 87.13%    | 93.94%     | 89.45%     |
+| MVT                      | Cross-Subject   | 64.95%   | 70.61%    | 57.58%     | 65.90%     |
+| MVTWavelet               | Within-Subject  | 90.69%   | 90.07%    | 91.41%     | 90.82%     |
+| MVTWavelet               | Cross-Subject   | 63.80%   | 71.08%    | 55.41%     | 63.95%     |
+| Multispatial GS (dim=128)| Within-Subject  | 97.38%   | 96.69%    | 96.97%     | 98.62%     |
+| Multispatial GS (dim=128)| Cross-Subject   | 63.46%   | 71.08%    | 61.37%     | 56.18%     |
+| Multispatial GS (dim=264)| Within-Subject  | **98.55%**| 98.53%    | 98.99%     | 98.17%     |
+| Multispatial GS (dim=264)| Cross-Subject   | 59.68%   | 69.17%    | 55.23%     | 53.53%     |
+
+The Multispatial Graph Spectral (GS) model with dimension 264 achieves the highest within-subject accuracy of 98.55%.
+
+## Directory Structure
+
+### Core Model Components
+Each model follows a consistent naming pattern with dedicated files for model architecture, dataset handling, training, and testing:
+
+#### Multispatial Graph Spectral (GS) Model
+- `eeg_multi_spatial_graph_spectral_advanced.py` - Main model architecture
+- `eeg_dataset_multispatialgraph_spectral_advanced.py` - Dataset preprocessing
+- `train_kfold_multi_spatial_graph_spectral_advanced.py` - Training pipeline
+- `test_multispatial_graph_spectral_advanced.py` - Evaluation script
+
+#### Multi-View Transformer (MVT) Model
+- `eeg_mvt.py` - Base MVT model architecture
+- `eeg_mvt_dataset.py` - MVT dataset handling
+- `train_kfold_mvt.py` - MVT training script
+- `test_mvt.py` - MVT evaluation script
+
+#### Multi-View Transformer with Wavelet Features
+- `eeg_mvt_mfeat.py` - MVT model with wavelet features
+- `eeg_mvt_dataset_mfeat.py` - MVT wavelet dataset handling
+- `train_kfold_mvt_mfeat.py` - MVT wavelet training script
+- `test_mvt_mfeat.py` - MVT wavelet evaluation script
+
+#### Support Vector Machine (SVM)
+- `eeg_svm.py` - SVM model implementation
+- `eeg_svm_dataset.py` - SVM dataset handling
+- `train_kfold_svm.py` / `train_kfold_svm_grid.py` - SVM training scripts
+- `test_svm.py` - SVM evaluation script
+
+#### Other Models
+- `eeg_net.py` - Standard EEGNet implementation
+- `eeg_adformer.py` - Attention-based transformer model
+- `eeg_dataset_adformer.py` - Transformer dataset handling
+- `train_kfold_adformer.py` - Transformer training script
+- `test_adformer.py` - Transformer evaluation script
+
+### Data Processing
+- `data_prep.py` - Data preparation and splitting
+- `data_vis.py` - Data visualization utilities
+
+### Datasets
+- `eeg_dataset.py` - Base dataset class
+- `eeg_mvt_dataset.py` / `eeg_mvt_dataset_mfeat.py` - MVT-specific datasets
+- `eeg_svm_dataset.py` - SVM-specific dataset
+- `eeg_dataset_adformer.py` - Transformer-specific dataset
+
+### Training Scripts
+- `train_kfold.py` - Base K-fold training
+- `train_kfold_mvt.py` / `train_kfold_mvt_mfeat.py` - MVT training
+- `train_kfold_svm.py` / `train_kfold_svm_grid.py` - SVM training
+- `train_kfold_adformer.py` - Transformer training
+
+### Evaluation Scripts
+- `test.py` - Base testing script
+- `test_mvt.py` / `test_mvt_mfeat.py` - MVT testing
+- `test_svm.py` - SVM testing
+- `test_adformer.py` - Transformer testing
+
+### Utilities
+- `hyperparameter_tuning.py` - Hyperparameter optimization
+- `viz.py` - Visualization tools
+- `model_architecture.py` - Model architecture utilities
+
+## Model Architecture
+
+The Multispatial Graph Spectral (GS) model architecture combines multiple neural network approaches:
+
+1. **Spatial Feature Extractor**: Processes raw EEG signals using spatial and channel convolutions followed by transformer encoders
+2. **Multi-Scale Graph Module**: Processes spectral embeddings at different frequency scales using graph convolutions and attention
+3. **Cross-Attention Mechanism**: Fuses information between spatial and spectral pathways
+4. **Pooling and Fusion**: Combines features from both pathways for final classification
+
+![Model Architecture](mvt_full_model.png)
+
+### Component Diagrams
+- [Spatial Extractor](spatial_extractor.png)
+- [Multiscale Graph Module](multiscale_graph_module.png)
+- [Cross Attention Interactive](cross_attention_interactive.html)
+
+## Data Processing Pipeline
+
+The data processing pipeline includes:
+1. Cropping raw EEG data (removing 30 seconds from start and end)
+2. Resampling to 95 Hz
+3. Splitting into 15-second chunks (1424 timepoints)
+4. Computing spectral features across multiple frequency bands
+5. Creating adjacency matrices for electrode relationships
+6. Calculating lobe-specific features for different brain regions
+
+## Usage
+
+### Data Preparation
+```python
+python data_prep.py
+```
+
+### Training
+Choose the model you want to train:
+
+```python
+# Train the Multispatial Graph Spectral model
+python train_kfold_multi_spatial_graph_spectral_advanced.py
+
+# Train the basic Multi-View Transformer
+python train_kfold_mvt.py
+
+# Train the Multi-View Transformer with wavelet features
+python train_kfold_mvt_mfeat.py
+
+# Train the SVM model
+python train_kfold_svm.py
+```
+
+### Evaluation
+```python
+# Test the Multispatial Graph Spectral model
+python test_multispatial_graph_spectral_advanced.py
+
+# Test the Multi-View Transformer
+python test_mvt.py
+
+# Test the Multi-View Transformer with wavelet features
+python test_mvt_mfeat.py
+```
+
+### Visualization
+```python
+python viz.py
+```
 
 ## Requirements
-- Python 3.6+
-- PyTorch 1.7.0+ (with CUDA support)
+
+- PyTorch
+- MNE
 - NumPy
-- Matplotlib
 - Scikit-learn
-- MNE (with CUDA support)
-- tqdm
-- Pandas
-- Seaborn
+- Wandb (for experiment tracking)
+- SciPy
 
-## Code Structure
-Files in the repository root:
-- `data_prep.py`: Contains code for loading and preprocessing the EEG data.
-- `data_vis.py`: Contains code for visualizing the EEG data.
-- `eeg_dataset.py`: Contains the EEGDataset class for loading the EEG data.
-- `eeg_net.py`: Contains the EEGNet class for the CNN model.
-- `hyperparameter_tuning.py`: Contains code for hyperparameter tuning.
-- `test.py`: Contains code for testing the model.
-- `train_batch.py`: Contains code for training the model using a vanilla batch training approach.
-- `train_kfold.py`: Contains code for training the model using k-fold cross-validation.
-- `mne_tests.ipynb`: Jupyter notebook for testing the MNE library.
-- `eegnet.db`: SQLite database for storing hyperparameters and model performance.
+## License
 
-Folders in the repository:
-- `data-imgs/` & `images/`: Contains images generated by the code.
-- `images_train(train_type)`: Contains images generated during respective training.
-- `model-data/`: Contains the dataset used in the project.
-- `models/`: Contains the trained models.
+[Your License Here]
 
-## Sample colab for testing:
-The following colab notebook can be used to test the latest model: 
+## Citation
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/15RNs-woLNx1eir-kVnEldIABBs1xnxHU?usp=sharing)
+If you use this code in your research, please cite:
 
-## Todo
-README and code will be updated if needed.
-srun --nodes=1 --tasks-per-node=1 --cpus-per-task=1 --mem=6GB --time=06:00:00 --gres=gpu:v100:1 --account=pr_130_general --pty /bin/bash
+[Your Citation Information Here]
