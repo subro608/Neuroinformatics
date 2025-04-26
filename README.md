@@ -176,3 +176,13 @@ python viz.py
 - Scikit-learn
 - Wandb (for experiment tracking)
 - SciPy
+## Using the Best Saved Model
+
+The best performing model from our experiments is saved as `best_model_overall_multiscale_graph_spectral.pth`, which achieved **98.55%** accuracy on within-subject testing. To use this pre-trained model for inference:
+
+1. Download the model file from the releases section or the models directory
+2. Use the corresponding test script:
+
+```python
+# Test using the best Multiscale Graph Spectral model
+python test_multiscale_graph_spectral_advanced.py --model_path "models/best_model_overall_multiscale_graph_spectral.pth" --device "cuda" --batch_size 16
