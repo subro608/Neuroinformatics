@@ -1,0 +1,66 @@
+# 🧠 Alzheimer's Detection from EEG using Machine Learning
+
+This project investigates the use of EEG signal processing and machine learning for detecting Alzheimer's disease. The pipeline includes EEG preprocessing, noise-informed data augmentation, classical ML models, deep learning (EEGNet and CNNs), and evaluation on both original and augmented datasets.
+
+---
+
+## 📦 Contents
+
+| File Name                               | Purpose                                                                 |
+|-----------------------------------------|-------------------------------------------------------------------------|
+| `Data_augmentation.ipynb`               | Implements all EEG data augmentation techniques                         |
+| `EEGNet_Augmented.ipynb`                | Trains and evaluates EEGNet on augmented EEG data                       |
+| `all_baselineModel_augmentedData.ipynb` | Runs Random Forest, SVM, and Gradient Boost on augmented EEG data      |
+| `Benchmarks_updated__with_vis.ipynb`    | Compares results from all models, visualizes ROC, accuracy, and F1     |
+
+---
+
+## 🧪 Augmentation Techniques
+
+Augmentation is applied **only on the training set** (never on test/validation) to prevent data leakage.
+
+### ✅ Noise Injection
+- **Gaussian noise**: zero-mean, std = 0.01 × signal std  
+- **White noise**: flat power spectrum  
+- **Pink noise**: EEG-like, power ∝ 1/f  
+- **Brownian noise**: low-frequency dominant, simulates drift  
+
+### ✅ Time Shifting
+- Circular shift along the time axis (±5–10 samples)  
+- Helps model generalize across phase variations
+
+### ✅ Amplitude Scaling
+- Random scale between 0.9× and 1.1×  
+- Simulates variability in electrode-skin contact or subject physiology
+
+---
+
+## ⚙️ Preprocessing Pipeline Summary
+
+Preprocessing is performed using the MNE-Python library and includes:
+
+1. **Concatenation of EEG chunks** per subject  
+2. **Bandpass Filtering** (1–45 Hz) to retain relevant EEG frequency bands  
+3. **ICA (Independent Component Analysis)** to remove ocular/muscle artifacts  
+4. **Bad Channel Detection & Interpolation**
+   - Based on **low/high variance**
+   - Interpolates flat (disconnected) or noisy (spiky) channels  
+5. **Epoching** into fixed-length 3-second windows with 1-second overlap  
+6. **Data Augmentation** (as listed above)
+
+---
+
+## ⚠️ Lessons Learned
+
+- Augmentation must follow complete preprocessing (ICA, filtering, etc.)
+- Never apply augmentation to validation/test sets — it leads to data leakage
+- Not all augmentations are beneficial: poorly matched noise or excessive shifts can distort diagnostic features
+
+---
+
+### 🔧 Requirements
+
+Install dependencies using:
+
+```bash
+pip install numpy pandas scikit-learn mne matplotlib seaborn
