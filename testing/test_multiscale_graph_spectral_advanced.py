@@ -61,7 +61,7 @@ def evaluate_model(model, dataloader, device, class_names=["A", "C", "F"]):
             inference_time = time.time() - start_time
             inference_times.append(inference_time)
 
-            probs = torch.softmax(outputs, dim=1)
+            probs = torch.softmax(outputs.float(), dim=1)
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -182,7 +182,8 @@ def test_model(data_type, model_path):
     output_dir = f"results_{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
 
-    num_channels, num_classes, dim, scales = 19, 3, 256, [3, 4, 5]
+    dim = int(os.environ.get("EEG_DIM", 64))
+    num_channels, num_classes, scales = 19, 3, [3, 4, 5]
     class_names = ["A", "C", "F"]
 
     # Dynamic batch size
@@ -195,7 +196,7 @@ def test_model(data_type, model_path):
     print(f"Using device: {device}, Batch size: {batch_size}")
 
     # Load model
-    from eeg_multi_spatial_graph_spectral_advanced import create_model
+    from eeg_multi_scale_graph_spectral_advanced import create_model
 
     try:
         model = create_model(
@@ -212,7 +213,7 @@ def test_model(data_type, model_path):
         return None
 
     # Load data
-    data_dir = "model-data"
+    data_dir = os.environ.get("EEG_DATA_DIR", "model_data")
     labels_path = os.path.join(data_dir, "labels.json")
     if not os.path.exists(labels_path):
         print(f"Error: labels.json not found")
@@ -236,9 +237,9 @@ def test_model(data_type, model_path):
         f"Dataset {data_type}: {len(verified_data)} samples, Distribution: {class_counts}"
     )
 
-    from eeg_dataset_multispatialgraph_spectral import create_dataset
+    from eeg_dataset_multiscalegraph_spectral_advanced import SpatialSpectralEEGDataset
 
-    test_dataset = create_dataset(
+    test_dataset = SpatialSpectralEEGDataset(
         data_dir=data_dir,
         data_info=verified_data,
         scales=scales,
@@ -314,17 +315,18 @@ def main():
     output_dir = f"spatial_results_{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
 
-    model_path = "spatial_spectral_20250324_233829/models/best_model_overall.pth"
-    if not os.path.exists(model_path):
+    model_path = os.environ.get("EEG_MODEL_PATH", "")
+    if not model_path or not os.path.exists(model_path):
+        # Search for best_model_overall.pth
         for root, _, files in os.walk("."):
             for file in files:
                 if file.endswith(".pth") and "best_model_overall" in file:
                     model_path = os.path.join(root, file)
                     break
-            if os.path.exists(model_path):
+            if model_path and os.path.exists(model_path):
                 break
         else:
-            print("No suitable model found")
+            print("No suitable model found. Set EEG_MODEL_PATH env var.")
             return
 
     print(f"Using model: {model_path}")

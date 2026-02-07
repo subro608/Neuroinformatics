@@ -3,37 +3,38 @@ import os
 import random
 import time
 import warnings
+from datetime import datetime
 
-import matplotlib.pyplot as plt
-import mne
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb
 from eeg_mvt import MVTEEG
 from eeg_mvt_dataset import EEGDataset
 from sklearn.metrics import precision_recall_fscore_support
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import GroupKFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
-# Ignore RuntimeWarning and FutureWarning
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Enable CUDA
-mne.utils.set_config("MNE_USE_CUDA", "true")
-mne.cuda.init_cuda(verbose=True)
+
+def progress_bar(current, total, width=50, prefix="", suffix=""):
+    percent = f"{100 * (current / float(total)):.1f}%"
+    filled_length = int(width * current // total)
+    bar = "=" * filled_length + "-" * (width - filled_length)
+    print(f"\r{prefix} [{bar}] {percent} {suffix}", end="")
+    if current == total:
+        print()
 
 
 def get_latest_checkpoint(checkpoint_dir):
-    """Find the latest checkpoint in the directory"""
     if not os.path.exists(checkpoint_dir):
         return None
-
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pt")]
     if not checkpoints:
         return None
-
     checkpoint_info = []
     for ckpt in checkpoints:
         try:
@@ -42,23 +43,18 @@ def get_latest_checkpoint(checkpoint_dir):
             checkpoint_info.append((fold, epoch, ckpt))
         except:
             continue
-
     if not checkpoint_info:
         return None
-
-    checkpoint_info.sort(key=lambda x: (x[0], x[1]))
-    return checkpoint_info[-1]
+    return max(checkpoint_info, key=lambda x: (x[0], x[1]))
 
 
 def compute_metrics(y_true, y_pred):
-    """Compute precision, recall, and F1 score"""
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true, y_pred, average="weighted", zero_division=0
     )
     return precision, recall, f1
 
 
-# Set random seed for reproducibility
 def set_seed(seed=42):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -70,326 +66,354 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-set_seed(42)
-
-# Create necessary directories
-for dir_path in ["images_mvt_kfold", "models", "logs", "models/checkpoints"]:
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
-
-# Create log file with timestamp
-log_filename = f'logs/training_log_{time.strftime("%Y%m%d_%H%M%S")}.txt'
+def extract_subject_id(file_name):
+    """Extract subject ID (e.g., 'sub-077') from chunk file name."""
+    basename = os.path.basename(file_name)
+    return basename.split("_eeg_chunk")[0]
 
 
-def log_message(message, filename=log_filename):
-    print(message)
-    with open(filename, "a") as f:
-        f.write(message + "\n")
+def main():
+    set_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
+    # Model and training parameters (overridable via env vars)
+    num_channels = 19
+    num_classes = 3
+    dim = int(os.environ.get("EEG_DIM", 512))
+    epochs = int(os.environ.get("EEG_EPOCHS", 200))
+    learning_rate = float(os.environ.get("EEG_LR", 0.0003))
+    weight_decay = 0.01
+    max_grad_norm = 1.0
 
-# Model parameters
-num_chans = 19
-num_classes = 3
-dim = 512
-dropout_rate = 0.1
+    # Multi-GPU setup
+    num_gpus = int(os.environ.get("EEG_NUM_GPUS", 1))
+    if torch.cuda.is_available():
+        num_gpus = min(num_gpus, torch.cuda.device_count())
+    else:
+        num_gpus = 0
+    use_multi_gpu = num_gpus > 1
 
+    # Batch size
+    if os.environ.get("EEG_BATCH_SIZE"):
+        batch_size = int(os.environ["EEG_BATCH_SIZE"])
+    elif torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info()
+        batch_size = 32 if free_mem > 8e9 else 16 if free_mem > 4e9 else 8
+    else:
+        batch_size = 4
+    effective_batch = batch_size * max(num_gpus, 1)
+    accumulation_steps = max(1, 32 // effective_batch)
 
-def init_weights(m):
-    """Fixed initialization function using relu instead of gelu"""
-    if isinstance(m, nn.Linear):
-        nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-        if m.bias is not None:
-            nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.LayerNorm):
-        nn.init.constant_(m.weight, 1.0)
-        nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.Conv1d):
-        nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-        if m.bias is not None:
-            nn.init.constant_(m.bias, 0)
-
-
-# Initialize model
-mvt_model = MVTEEG(num_channels=num_chans, num_classes=num_classes, dim=dim)
-mvt_model.apply(init_weights)
-
-# Log model architecture
-log_message(str(mvt_model))
-log_message(
-    f"Model parameters: num_channels={num_chans}, num_classes={num_classes}, dim={dim}"
-)
-
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-mvt_model = mvt_model.to(device)
-
-# Load and prepare data
-data_dir = "model-data"
-with open(os.path.join(data_dir, "labels.json"), "r") as file:
-    data_info = json.load(file)
-
-# Filter training data
-train_data = [d for d in data_info if d["type"] == "train"]
-
-# Balance dataset
-train_data_A = [d for d in train_data if d["label"] == "A"]
-train_data_C = [d for d in train_data if d["label"] == "C"]
-train_data_F = [d for d in train_data if d["label"] == "F"]
-
-min_samples = min(len(train_data_A), len(train_data_C), len(train_data_F))
-balanced_train_data = (
-    random.sample(train_data_A, min_samples)
-    + random.sample(train_data_C, min_samples)
-    + random.sample(train_data_F, min_samples)
-)
-
-log_message(f"Dataset Statistics:")
-log_message(
-    f"Before Balancing - A: {len(train_data_A)}, C: {len(train_data_C)}, F: {len(train_data_F)}"
-)
-log_message(f"After Balancing - A: {min_samples}, C: {min_samples}, F: {min_samples}")
-log_message(f"Total samples: {len(balanced_train_data)}")
-
-# Create dataset
-train_dataset = EEGDataset(data_dir, balanced_train_data)
-
-# Training parameters
-epochs = 100
-batch_size = 16
-learning_rate = 0.0003  # Increased from 0.0001
-accumulation_steps = 4
-max_grad_norm = 1.0
-
-# Resume training setup
-checkpoint_dir = "models/checkpoints"
-latest_checkpoint = get_latest_checkpoint(checkpoint_dir)
-start_fold = 0
-start_epoch = 0
-train_losses = []
-valid_losses = []
-best_accuracy = 0.0
-
-if latest_checkpoint:
-    fold_num, epoch_num, checkpoint_file = latest_checkpoint
-    log_message(f"Resuming from checkpoint: Fold {fold_num}, Epoch {epoch_num}")
-    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_file)
-    checkpoint = torch.load(checkpoint_path)
-    start_fold = checkpoint["fold"]
-    start_epoch = checkpoint["epoch"] + 1
-    train_losses = checkpoint.get("train_losses", [])
-    valid_losses = checkpoint.get("valid_losses", [])
-    best_accuracy = checkpoint.get("best_accuracy", 0.0)
-else:
-    log_message("Starting training from scratch")
-
-# Initialize k-fold
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
-# Training components
-criterion = nn.CrossEntropyLoss()
-
-# Training loop
-for fold, (train_index, valid_index) in enumerate(
-    skf.split(train_dataset.data, train_dataset.labels)
-):
-    if fold < start_fold:
-        continue
-
-    log_message(f"\nFold {fold + 1}/5")
-
-    # Reset model for each fold
-    mvt_model.apply(init_weights)
-
-    # Prepare data loaders
-    train_sampler = SubsetRandomSampler(train_index)
-    valid_sampler = SubsetRandomSampler(valid_index)
-
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, sampler=train_sampler
+    # WandB setup
+    run_name = f"mvt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "eeg_spatial_spectral"),
+        name=run_name,
+        config={
+            "model_type": "MVT_EEG",
+            "dim": dim,
+            "num_channels": num_channels,
+            "num_classes": num_classes,
+            "batch_size": batch_size,
+            "effective_batch_size": effective_batch,
+            "num_gpus": num_gpus,
+            "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
+            "epochs": epochs,
+            "accumulation_steps": accumulation_steps,
+            "max_grad_norm": max_grad_norm,
+            "optimizer": "AdamW",
+        },
     )
-    valid_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, sampler=valid_sampler
+    print(f"Multi-GPU: {use_multi_gpu} ({num_gpus} GPUs, effective batch: {effective_batch})")
+
+    # Directories
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_dir = f"mvt_{timestamp}"
+    for dir_path in [
+        f"{base_dir}/models",
+        f"{base_dir}/logs",
+        f"{base_dir}/checkpoints",
+    ]:
+        os.makedirs(dir_path, exist_ok=True)
+
+    log_filename = f"{base_dir}/logs/training_log.txt"
+
+    def log_message(message):
+        print(message)
+        with open(log_filename, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+
+    # Initialize model
+    model = MVTEEG(num_channels=num_channels, num_classes=num_classes, dim=dim)
+    model.init_weights()
+    log_message(f"Using MVT EEG model with dim={dim}")
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    log_message(f"Total trainable parameters: {total_params:,}")
+
+    # Device setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    if use_multi_gpu:
+        model = nn.DataParallel(model)
+        log_message(f"Using DataParallel across {num_gpus} GPUs")
+    log_message(f"Using device: {device}")
+    if device.type == "cuda":
+        for i in range(torch.cuda.device_count()):
+            log_message(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+
+    wandb.watch(model, log="all", log_freq=10)
+
+    # Load data
+    data_dir = os.environ.get("EEG_DATA_DIR", "model_data")
+    with open(os.path.join(data_dir, "labels.json"), "r") as file:
+        data_info = json.load(file)
+    train_data = [d for d in data_info if d["type"] == "train"]
+
+    # Balance dataset
+    train_data_A = [d for d in train_data if d["label"] == "A"]
+    train_data_C = [d for d in train_data if d["label"] == "C"]
+    train_data_F = [d for d in train_data if d["label"] == "F"]
+    min_samples = min(len(train_data_A), len(train_data_C), len(train_data_F))
+    balanced_train_data = (
+        random.sample(train_data_A, min_samples)
+        + random.sample(train_data_C, min_samples)
+        + random.sample(train_data_F, min_samples)
     )
 
-    log_message(f"Train dataloader: {len(train_dataloader)} batches")
-    log_message(f"Valid dataloader: {len(valid_dataloader)} batches")
-
-    # Initialize optimizer and scheduler
-    optimizer = optim.AdamW(
-        mvt_model.parameters(),
-        lr=learning_rate,
-        weight_decay=0.01,  # Reduced from 0.1
-        betas=(0.9, 0.95),
+    log_message(
+        f"Dataset Statistics: Before - A: {len(train_data_A)}, C: {len(train_data_C)}, F: {len(train_data_F)}"
+    )
+    log_message(
+        f"After - A: {min_samples}, C: {min_samples}, F: {min_samples}, Total: {len(balanced_train_data)}"
+    )
+    wandb.log(
+        {
+            "dataset_size_after_balancing": len(balanced_train_data),
+            "class_samples": min_samples,
+        }
     )
 
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=learning_rate,
-        epochs=epochs,
-        steps_per_epoch=len(train_dataloader),
-        pct_start=0.2,  # Increased warm-up period
-        div_factor=10,  # Reduced from 25
-        final_div_factor=1e3,
-    )
+    # Create dataset
+    train_dataset = EEGDataset(data_dir, balanced_train_data)
 
-    # Load checkpoint if resuming
-    if fold == start_fold and start_epoch > 0:
-        mvt_model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    # Build subject groups for subject-aware cross-validation
+    subject_ids = [extract_subject_id(d["file_name"]) for d in balanced_train_data]
+    unique_subjects = sorted(set(subject_ids))
+    subject_to_group = {s: i for i, s in enumerate(unique_subjects)}
+    groups = np.array([subject_to_group[s] for s in subject_ids])
+    log_message(f"Subject-aware CV: {len(unique_subjects)} unique subjects, {len(subject_ids)} chunks")
 
-    # Initialize gradient scaler
-    scaler = torch.amp.GradScaler("cuda")
+    # Resume training
+    checkpoint_dir = f"{base_dir}/checkpoints"
+    latest_checkpoint = get_latest_checkpoint(checkpoint_dir)
+    start_fold, start_epoch = 0, 0
+    best_accuracy = 0.0
+    if latest_checkpoint:
+        fold_num, epoch_num, checkpoint_file = latest_checkpoint
+        checkpoint = torch.load(os.path.join(checkpoint_dir, checkpoint_file))
+        start_fold, start_epoch = checkpoint["fold"], checkpoint["epoch"] + 1
+        best_accuracy = checkpoint.get("best_accuracy", 0.0)
+        log_message(f"Resuming from Fold {fold_num}, Epoch {epoch_num}")
+    else:
+        log_message("Starting from scratch")
 
-    # Training epochs
-    fold_losses = []
-    fold_valid_losses = []
+    # Subject-aware Group K-Fold
+    n_folds = int(os.environ.get("EEG_NUM_FOLDS", 5))
+    gkf = GroupKFold(n_splits=n_folds)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    for epoch in range(epochs):
-        if fold == start_fold and epoch < start_epoch:
+    for fold, (train_index, valid_index) in enumerate(
+        gkf.split(train_dataset.data, train_dataset.labels, groups=groups)
+    ):
+        if fold < start_fold:
             continue
 
-        start_time = time.time()
-        mvt_model.train()
-        train_loss = 0.0
-        optimizer.zero_grad()
+        val_subjects = sorted(set(subject_ids[i] for i in valid_index))
+        train_subjects_fold = sorted(set(subject_ids[i] for i in train_index))
+        log_message(f"\nFold {fold + 1}/{n_folds}")
+        log_message(f"  Train: {len(train_subjects_fold)} subjects ({len(train_index)} chunks)")
+        log_message(f"  Valid: {len(val_subjects)} subjects ({len(valid_index)} chunks) - {val_subjects}")
+        wandb.log({"current_fold": fold + 1, "val_subjects": len(val_subjects), "train_subjects": len(train_subjects_fold)})
 
-        # Training loop
-        for batch_idx, (inputs_dict, labels) in enumerate(train_dataloader):
-            # Move data to device
-            inputs = {k: v.to(device) for k, v in inputs_dict.items()}
-            labels = labels.to(device)
+        # Reset model for each fold
+        model = MVTEEG(num_channels=num_channels, num_classes=num_classes, dim=dim)
+        model.init_weights()
+        model.to(device)
+        if use_multi_gpu:
+            model = nn.DataParallel(model)
 
-            # Forward pass with mixed precision
-            with torch.amp.autocast("cuda"):
-                outputs = mvt_model(inputs["time"])
-                loss = criterion(outputs, labels) / accumulation_steps
+        # Data loaders
+        pin_memory = device.type == "cuda"
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            sampler=SubsetRandomSampler(train_index),
+            pin_memory=pin_memory,
+            num_workers=4,
+            prefetch_factor=2,
+            drop_last=True,
+        )
+        valid_dataloader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            sampler=SubsetRandomSampler(valid_index),
+            pin_memory=pin_memory,
+            num_workers=4,
+            prefetch_factor=2,
+            drop_last=True,
+        )
 
-            # Backward pass
-            scaler.scale(loss).backward()
+        log_message(
+            f"Train batches: {len(train_dataloader)}, Valid batches: {len(valid_dataloader)}"
+        )
 
-            if (batch_idx + 1) % accumulation_steps == 0:
-                scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    mvt_model.parameters(), max_grad_norm
+        # Optimizer and schedulers
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.95),
+        )
+        warmup_scheduler = optim.lr_scheduler.LambdaLR(
+            optimizer, lambda e: min(1.0, e / 5.0) if e < 5 else 1.0
+        )
+        plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=10
+        )
+
+        if fold == start_fold and start_epoch > 0:
+            model_to_load = model.module if use_multi_gpu else model
+            model_to_load.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        scaler = torch.amp.GradScaler()
+        best_fold_accuracy, best_fold_loss = 0.0, float("inf")
+        patience_counter = 0
+
+        for epoch in range(start_epoch if fold == start_fold else 0, epochs):
+            model.train()
+            train_loss = 0.0
+            optimizer.zero_grad()
+
+            for batch_idx, (inputs_dict, labels) in enumerate(train_dataloader):
+                progress_bar(
+                    batch_idx + 1,
+                    len(train_dataloader),
+                    prefix=f"Epoch {epoch + 1}/{epochs}, Batch:",
                 )
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-                scheduler.step()
 
-                if batch_idx % (accumulation_steps * 10) == 0:
-                    log_message(
-                        f"Batch {batch_idx}/{len(train_dataloader)}, Gradient norm: {grad_norm:.4f}"
+                inputs = {k: v.to(device, non_blocking=True) for k, v in inputs_dict.items()}
+                labels = labels.to(device, non_blocking=True)
+
+                with torch.amp.autocast(device_type=device.type):
+                    outputs = model(inputs["time"])
+                    loss = criterion(outputs, labels) / accumulation_steps
+
+                scaler.scale(loss).backward()
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_grad_norm
+                    )
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                    wandb.log({"grad_norm": grad_norm})
+
+                train_loss += loss.item() * accumulation_steps
+
+            warmup_scheduler.step()
+            epoch_train_loss = train_loss / len(train_dataloader)
+
+            # Validation
+            model.eval()
+            valid_loss, correct, total = 0.0, 0, 0
+            all_preds, all_labels = [], []
+
+            with torch.no_grad():
+                for inputs_dict, labels in valid_dataloader:
+                    inputs = {k: v.to(device, non_blocking=True) for k, v in inputs_dict.items()}
+                    labels = labels.to(device, non_blocking=True)
+
+                    with torch.amp.autocast(device_type=device.type):
+                        outputs = model(inputs["time"])
+                        loss = criterion(outputs, labels)
+                    valid_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    total += labels.size(0)
+                    correct += predicted.eq(labels).sum().item()
+                    all_preds.extend(predicted.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
+
+            epoch_valid_loss = valid_loss / len(valid_dataloader)
+            accuracy = 100.0 * correct / total
+            precision, recall, f1 = compute_metrics(all_labels, all_preds)
+
+            plateau_scheduler.step(epoch_valid_loss)
+            current_lr = optimizer.param_groups[0]["lr"]
+
+            # Logging
+            log_message(
+                f"Fold {fold + 1}/{n_folds}, Epoch {epoch + 1}/{epochs}, "
+                f"Train Loss: {epoch_train_loss:.4f}, Valid Loss: {epoch_valid_loss:.4f}, "
+                f"Accuracy: {accuracy:.2f}%, F1: {f1:.4f}, LR: {current_lr:.6f}"
+            )
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "fold": fold + 1,
+                    "train_loss": epoch_train_loss,
+                    "valid_loss": epoch_valid_loss,
+                    "accuracy": accuracy,
+                    "f1_score": f1,
+                    "learning_rate": current_lr,
+                }
+            )
+
+            # Checkpoint (unwrap DataParallel for portable state_dict)
+            model_to_save = model.module if use_multi_gpu else model
+            if epoch % 5 == 0 or epoch == epochs - 1:
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "fold": fold,
+                        "model_state_dict": model_to_save.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_accuracy": best_accuracy,
+                    },
+                    f"{checkpoint_dir}/fold{fold+1}_epoch{epoch+1}.pt",
+                )
+
+            # Early stopping and best model
+            if accuracy > best_fold_accuracy:
+                best_fold_accuracy = accuracy
+                torch.save(
+                    model_to_save.state_dict(), f"{base_dir}/models/best_model_fold{fold+1}.pth"
+                )
+                if accuracy > best_accuracy:
+                    best_accuracy = accuracy
+                    torch.save(
+                        model_to_save.state_dict(), f"{base_dir}/models/best_model_overall.pth"
                     )
 
-            train_loss += loss.item() * accumulation_steps
+            if epoch_valid_loss < best_fold_loss:
+                best_fold_loss = epoch_valid_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= 30:
+                    log_message(f"Early stopping at epoch {epoch + 1}")
+                    break
 
-        # Validation
-        mvt_model.eval()
-        valid_loss = 0.0
-        correct = 0
-        total = 0
-        all_preds = []
-        all_labels = []
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-        with torch.no_grad():
-            for inputs_dict, labels in valid_dataloader:
-                inputs = {k: v.to(device) for k, v in inputs_dict.items()}
-                labels = labels.to(device)
+    # Final summary
+    log_message(f"\nTraining completed! Best accuracy: {best_accuracy:.2f}%")
+    wandb.finish()
 
-                with torch.amp.autocast("cuda"):
-                    outputs = mvt_model(inputs["time"])
-                    loss = criterion(outputs, labels)
 
-                valid_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
-
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-
-        # Calculate metrics
-        epoch_train_loss = train_loss / len(train_dataloader)
-        epoch_valid_loss = valid_loss / len(valid_dataloader)
-        accuracy = 100.0 * correct / total
-        precision, recall, f1 = compute_metrics(all_labels, all_preds)
-
-        # Store losses
-        fold_losses.append(epoch_train_loss)
-        fold_valid_losses.append(epoch_valid_loss)
-
-        # Calculate epoch time
-        epoch_time = time.time() - start_time
-
-        # Log metrics
-        metrics_message = (
-            f"Fold {fold + 1}/5, Epoch {epoch + 1}/{epochs}\n"
-            f"Time: {epoch_time:.2f}s\n"
-            f"Train Loss: {epoch_train_loss:.4f}, Valid Loss: {epoch_valid_loss:.4f}\n"
-            f"Accuracy: {accuracy:.2f}%, F1: {f1:.4f}\n"
-            f"Precision: {precision:.4f}, Recall: {recall:.4f}\n"
-            f"Learning Rate: {scheduler.get_last_lr()[0]:.6f}"
-        )
-        log_message(metrics_message)
-
-        # Save checkpoint
-        checkpoint = {
-            "epoch": epoch,
-            "fold": fold,
-            "model_state_dict": mvt_model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "train_loss": epoch_train_loss,
-            "valid_loss": epoch_valid_loss,
-            "accuracy": accuracy,
-            "best_accuracy": best_accuracy,
-            "train_losses": train_losses + fold_losses,
-            "valid_losses": valid_losses + fold_valid_losses,
-        }
-
-        torch.save(checkpoint, f"models/checkpoints/fold{fold+1}_epoch{epoch+1}.pt")
-
-        # Save best model
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
-            torch.save(
-                mvt_model.state_dict(), f"models/best_mvt_model_fold{fold+1}.pth"
-            )
-            log_message(f"New best model saved with accuracy: {accuracy:.2f}%")
-
-    # Store fold results
-    train_losses.extend(fold_losses)
-    valid_losses.extend(fold_valid_losses)
-
-    # Plot fold results
-    plt.figure(figsize=(12, 6))
-    plt.plot(fold_losses, label="Train Loss")
-    plt.plot(fold_valid_losses, label="Valid Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title(f"Training and Validation Loss - Fold {fold+1}")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(f"images_mvt_kfold/losses_fold{fold+1}.png")
-    plt.close()
-# Final results
-log_message("\nTraining completed!")
-log_message(f"Average Training Loss: {np.mean(train_losses):.4f}")
-log_message(f"Average Validation Loss: {np.mean(valid_losses):.4f}")
-log_message(f"Best Accuracy: {best_accuracy:.2f}%")
-
-# Plot overall results
-plt.figure(figsize=(12, 6))
-plt.plot(train_losses, label="Train Loss")
-plt.plot(valid_losses, label="Valid Loss")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.title("Overall Training and Validation Loss")
-plt.legend()
-plt.grid(True)
-plt.savefig("images_mvt_kfold/losses_overall.png")
-plt.close()
-
-log_message("Training completed. Models and plots saved.")
+if __name__ == "__main__":
+    main()

@@ -586,6 +586,26 @@ srun --partition=l40s_public --gres=gpu:1 --mem=64G --cpus-per-task=8 \
 
 ## Changelog
 
+### 2026-02-07: Ray Tune & MVT Bug Fixes
+
+**Fix 1: Ray Tune callback API break (`training/ray_tune_eeg.py`)**
+
+**Problem:** Ray 2.53 removed support for `ray.air.integrations.wandb.WandbLoggerCallback` in `RunConfig.callbacks`. Only `ray.train.UserCallback` instances are accepted now, causing `ValueError` on launch.
+
+**Changes:**
+- Removed `WandbLoggerCallback` import and `SafeWandbLoggerCallback` wrapper class
+- Removed `callbacks=` parameter from `ray.train.RunConfig`
+- Added direct in-trial wandb logging: `wandb.init()` at trial start, `wandb.log(metrics)` per epoch, `wandb.finish()` at cleanup
+- Added `WANDB_AVAILABLE` flag for graceful fallback if wandb is not installed
+
+**Fix 2: MVT weight initialization crash (`training/eeg_mvt.py`)**
+
+**Problem:** `nn.init.kaiming_normal_(..., nonlinearity='gelu')` raises `ValueError: Unsupported nonlinearity gelu` in PyTorch 2.9. Kaiming init only supports `relu` and `leaky_relu`.
+
+**Change:** Replaced `nonlinearity='gelu'` → `nonlinearity='relu'` in `init_weights()` for both `nn.Linear` and `nn.Conv1d` layers (2 occurrences).
+
+---
+
 ### 2026-02-06: Subject-Aware Cross-Validation (GroupKFold)
 
 **Problem:** Previous `StratifiedKFold` split at chunk level — chunks from the same subject could appear in both train and validation, causing data leakage and inflated validation accuracy.
@@ -630,4 +650,4 @@ srun --partition=l40s_public --gres=gpu:1 --mem=64G --cpus-per-task=8 \
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: 2026-02-07*
