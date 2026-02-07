@@ -19,7 +19,7 @@ from eeg_multi_scale_graph_spectral_advanced import (
     create_model,
 )
 from sklearn.metrics import precision_recall_fscore_support
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import GroupKFold
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
@@ -72,36 +72,54 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
+def extract_subject_id(file_name):
+    """Extract subject ID (e.g., 'sub-077') from chunk file name."""
+    basename = os.path.basename(file_name)
+    return basename.split("_eeg_chunk")[0]
+
+
 def main():
     set_seed(42)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Model and training parameters
+    # Model and training parameters (overridable via env vars)
     num_channels = 19
     num_classes = 3
-    dim = 64  # Increased for better expressiveness
+    dim = int(os.environ.get("EEG_DIM", 64))
     scales = [3, 4, 5]
-    epochs = 200
-    learning_rate = 0.0003
+    epochs = int(os.environ.get("EEG_EPOCHS", 200))
+    learning_rate = float(os.environ.get("EEG_LR", 0.0003))
     weight_decay = 0.001
     max_grad_norm = 0.3
     time_length = 2000
 
-    # Dynamic batch size based on GPU memory
+    # Multi-GPU setup
+    num_gpus = int(os.environ.get("EEG_NUM_GPUS", 1))
     if torch.cuda.is_available():
+        num_gpus = min(num_gpus, torch.cuda.device_count())
+    else:
+        num_gpus = 0
+    use_multi_gpu = num_gpus > 1
+
+    # Batch size: configurable via env var, scaled by number of GPUs
+    if os.environ.get("EEG_BATCH_SIZE"):
+        batch_size = int(os.environ["EEG_BATCH_SIZE"])
+    elif torch.cuda.is_available():
         free_mem, total_mem = torch.cuda.mem_get_info()
         batch_size = (
             32 if free_mem > 8e9 else 16 if free_mem > 4e9 else 8
-        )  # Adjust based on 8GB, 4GB thresholds
+        )
     else:
         batch_size = 4
-    accumulation_steps = max(1, 32 // batch_size)  # Ensure effective batch size ~32
+    # With DataParallel, effective batch = batch_size * num_gpus
+    effective_batch = batch_size * max(num_gpus, 1)
+    accumulation_steps = max(1, 32 // effective_batch)
 
     # WandB setup
     run_name = f"spatial_spectral_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     wandb.init(
-        project="eeg_spatial_spectral",
+        project=os.environ.get("WANDB_PROJECT", "eeg_spatial_spectral"),
         name=run_name,
         config={
             "model_type": "MVTSpatialSpectral_Enhanced",
@@ -110,6 +128,8 @@ def main():
             "num_channels": num_channels,
             "num_classes": num_classes,
             "batch_size": batch_size,
+            "effective_batch_size": effective_batch,
+            "num_gpus": num_gpus,
             "learning_rate": learning_rate,
             "weight_decay": weight_decay,
             "epochs": epochs,
@@ -119,6 +139,7 @@ def main():
             "time_length": time_length,
         },
     )
+    print(f"Multi-GPU: {use_multi_gpu} ({num_gpus} GPUs, effective batch: {effective_batch})")
 
     # Directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -148,14 +169,18 @@ def main():
     # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+    if use_multi_gpu:
+        model = nn.DataParallel(model)
+        log_message(f"Using DataParallel across {num_gpus} GPUs")
     log_message(f"Using device: {device}")
     if device.type == "cuda":
-        log_message(f"CUDA device: {torch.cuda.get_device_name(0)}")
+        for i in range(torch.cuda.device_count()):
+            log_message(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
 
     wandb.watch(model, log="all", log_freq=10)
 
     # Load data
-    data_dir = "model-data"
+    data_dir = os.environ.get("EEG_DATA_DIR", "model_data")
     with open(os.path.join(data_dir, "labels.json"), "r") as file:
         data_info = json.load(file)
     train_data = [d for d in data_info if d["type"] == "train"]
@@ -193,6 +218,13 @@ def main():
         adjacency_type="combined",
     )
 
+    # Build subject groups for subject-aware cross-validation
+    subject_ids = [extract_subject_id(d["file_name"]) for d in balanced_train_data]
+    unique_subjects = sorted(set(subject_ids))
+    subject_to_group = {s: i for i, s in enumerate(unique_subjects)}
+    groups = np.array([subject_to_group[s] for s in subject_ids])
+    log_message(f"Subject-aware CV: {len(unique_subjects)} unique subjects, {len(subject_ids)} chunks")
+
     # Debug batch
     sample_loader = DataLoader(train_dataset, batch_size=4)
     sample_batch, sample_labels = next(iter(sample_loader))
@@ -217,24 +249,31 @@ def main():
     else:
         log_message("Starting from scratch")
 
-    # K-fold
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # Subject-aware Group K-Fold (no data leakage between subjects)
+    n_folds = int(os.environ.get("EEG_NUM_FOLDS", 5))
+    gkf = GroupKFold(n_splits=n_folds)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     contrastive_criterion = nn.CosineEmbeddingLoss(margin=0.5)
 
     for fold, (train_index, valid_index) in enumerate(
-        skf.split(train_dataset.data, train_dataset.labels)
+        gkf.split(train_dataset.data, train_dataset.labels, groups=groups)
     ):
         if fold < start_fold:
             continue
 
-        log_message(f"\nFold {fold + 1}/5")
-        wandb.log({"current_fold": fold + 1})
+        val_subjects = sorted(set(subject_ids[i] for i in valid_index))
+        train_subjects_fold = sorted(set(subject_ids[i] for i in train_index))
+        log_message(f"\nFold {fold + 1}/{n_folds}")
+        log_message(f"  Train: {len(train_subjects_fold)} subjects ({len(train_index)} chunks)")
+        log_message(f"  Valid: {len(val_subjects)} subjects ({len(valid_index)} chunks) - {val_subjects}")
+        wandb.log({"current_fold": fold + 1, "val_subjects": len(val_subjects), "train_subjects": len(train_subjects_fold)})
 
-        # Reset model
+        # Reset model for each fold
         model = create_model(
             num_channels=num_channels, num_classes=num_classes, dim=dim, scales=scales
         ).to(device)
+        if use_multi_gpu:
+            model = nn.DataParallel(model)
 
         # Data loaders
         pin_memory = device.type == "cuda"
@@ -273,7 +312,8 @@ def main():
         )
 
         if fold == start_fold and start_epoch > 0:
-            model.load_state_dict(checkpoint["model_state_dict"])
+            model_to_load = model.module if use_multi_gpu else model
+            model_to_load.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         scaler = torch.amp.GradScaler()
@@ -322,10 +362,11 @@ def main():
                     outputs = model(raw_eeg, scale_inputs)
 
                     # Extract intermediate features (assuming model exposes them)
-                    spatial_pooled = model.spatial_extractor(
+                    base_model = model.module if use_multi_gpu else model
+                    spatial_pooled = base_model.spatial_extractor(
                         raw_eeg, scale_inputs.get("spatial_positions", None)
                     ).mean(0)
-                    graph_pooled = model.graph_module(scale_inputs)
+                    graph_pooled = base_model.graph_module(scale_inputs)
 
                     if graph_pooled.size(1) != dim:
                         graph_pooled = F.pad(
@@ -417,7 +458,7 @@ def main():
             # Logging
             epoch_time = time.time() - time.time()
             log_message(
-                f"Fold {fold + 1}/5, Epoch {epoch + 1}/{epochs}, "
+                f"Fold {fold + 1}/{n_folds}, Epoch {epoch + 1}/{epochs}, "
                 f"Train Loss: {epoch_train_loss:.4f}, Valid Loss: {epoch_valid_loss:.4f}, "
                 f"Accuracy: {accuracy:.2f}%, F1: {f1:.4f}, LR: {current_lr:.6f}"
             )
@@ -433,13 +474,14 @@ def main():
                 }
             )
 
-            # Checkpoint
+            # Checkpoint (unwrap DataParallel for portable state_dict)
+            model_to_save = model.module if use_multi_gpu else model
             if epoch % 5 == 0 or epoch == epochs - 1:
                 torch.save(
                     {
                         "epoch": epoch,
                         "fold": fold,
-                        "model_state_dict": model.state_dict(),
+                        "model_state_dict": model_to_save.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "best_accuracy": best_accuracy,
                     },
@@ -450,12 +492,12 @@ def main():
             if accuracy > best_fold_accuracy:
                 best_fold_accuracy = accuracy
                 torch.save(
-                    model.state_dict(), f"{base_dir}/models/best_model_fold{fold+1}.pth"
+                    model_to_save.state_dict(), f"{base_dir}/models/best_model_fold{fold+1}.pth"
                 )
                 if accuracy > best_accuracy:
                     best_accuracy = accuracy
                     torch.save(
-                        model.state_dict(), f"{base_dir}/models/best_model_overall.pth"
+                        model_to_save.state_dict(), f"{base_dir}/models/best_model_overall.pth"
                     )
 
             if epoch_valid_loss < best_fold_loss:
